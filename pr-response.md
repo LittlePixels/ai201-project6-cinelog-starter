@@ -26,7 +26,29 @@ services, or docs).
 
 ## Comment 2 — Deduplication
 **What I did:**
-**How I verified:**
+Added deduplication to `add_to_watchlist()` in `services/watchlist_service.py`, following
+the exact pattern used by `add_to_collection()` in `services/collection_service.py`:
+- Defined a new `AlreadyInWatchlistError(Exception)` in the watchlist service, mirroring
+  how the collection service defines its own `AlreadyInCollectionError`.
+- Added the dedup check *after* the film-existence guard and *before* creating the entry:
+  query `WatchlistEntry` filtered by `user_id` + `film_id`, take `.first()`, and if a row
+  already exists, `raise AlreadyInWatchlistError` (no entry is created, nothing is committed).
+- Updated the docstring's `Raises:` section to document the new exception.
+
+**Model I followed (from Milestone 1 analysis of `add_to_collection`):**
+The collection dedup does a read-then-check: `Entry.query.filter_by(user_id=..., film_id=...).first()`,
+and if truthy, raises `AlreadyInCollectionError`. When a duplicate is detected it *raises*
+(returns nothing) and performs no DB write. I reproduced that ordering and behavior rather
+than relying only on the model's `UniqueConstraint`, so callers get a clean, named error
+instead of a raw `IntegrityError`.
+
+**How I verified the deduplication logic works:**
+- Ad-hoc check against an in-memory SQLite DB (same config the tests use): added a film to
+  a user's watchlist once (succeeds), then added the identical (user_id, film_id) again.
+  Result: the second call raised `AlreadyInWatchlistError`, and a follow-up
+  `WatchlistEntry.query...count()` returned **1** — confirming no duplicate row was written.
+- Ran the full suite (`pytest tests/ -v`): 4 passed, 0 failed — no regressions.
+  (A dedicated dupe test lives with the watchlist tests; see Comment 3 for the test file.)
 
 ## Comment 3 — Missing test
 **What I did:**
