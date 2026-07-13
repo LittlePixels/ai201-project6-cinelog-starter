@@ -35,5 +35,9 @@ def create_app(config=None):
 
 
 if __name__ == "__main__":
-    app = create_app()
-    app.run(debug=True)
+    # Import create_app from the 'app' module (not __main__) so the models and
+    # the running app share a single SQLAlchemy instance. Running `python app.py`
+    # otherwise loads this file twice, creating two separate `db` objects.
+    from app import create_app
+
+    create_app().run(debug=True)
