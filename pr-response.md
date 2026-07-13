@@ -100,8 +100,31 @@ Added `test_add_to_watchlist_defaults_to_private`, which asserts a freshly creat
 
 ## Comment 5 — Sort order
 **My position:**
+I agree with the reviewer. `get_watchlist()` now sorts by `date_added` **descending
+(newest first)**, matching `get_collection()`. Previously it sorted alphabetically by title.
+
 **Reasoning:**
+Two functions that both return "a user's saved films" were ordering results by different
+keys — collection by recency, watchlist alphabetically. That inconsistency is a footgun:
+a client rendering both lists has to special-case each, and users get two different mental
+models for the same kind of data. Recency is also the more useful default here — the film
+a user just added is the one most likely on their mind, and "newest first" surfaces it
+without scrolling. Alphabetical order is only clearly better when a list is long enough to
+scan by title, which isn't the common case for a personal watchlist.
+
 **Engagement with reviewer's point:**
+The reviewer flagged the divergence from `get_collection`'s ordering. I think that's the
+strongest form of the argument — the issue isn't that alphabetical is *wrong* in isolation,
+it's that consistency across the two endpoints has real value and there was no deliberate
+reason for watchlist to differ. If we later want alphabetical (or user-selectable) ordering,
+the right move is to add it to *both* endpoints together, not to let them drift. So I made
+watchlist match collection now, and noted sort-strategy as a future cross-cutting concern
+rather than a per-endpoint choice.
+
+**How I verified:**
+Added `test_get_watchlist_returns_newest_first` (mirrors the collection sort test): two
+entries added 5 days apart, asserts the later one comes first — this test would fail under
+the old alphabetical sort. Full suite: `pytest tests/ -v` → 9 passed.
 
 ## Comment 6 — Rebase
 **What conflicted:**
