@@ -1,0 +1,268 @@
+# PR Response Doc — CineLog Watchlist Feature
+
+## AI Usage
+I used an AI coding assistant (Claude Code) throughout this project. Specific uses:
+
+- **Codebase orientation.** Before changing anything, I had the AI summarize `models.py` and
+  `services/collection_service.py` — what each file owns, its functions, and its dependencies.
+  This is how I first spotted the integer-vs-UUID `film_id` tension between the service
+  docstrings and the model, which later turned out to be the crux of the Comment 6 rebase.
+- **Understanding a pattern (Comment 2).** I asked the AI to walk me through the dedup check
+  in `add_to_collection()` — specifically what it returns when a duplicate is detected (it
+  *raises* `AlreadyInCollectionError` and writes nothing). I then wrote my own
+  `add_to_watchlist()` dedup by hand following that pattern, rather than having the AI write it.
+- **Test structure (Comment 3).** I asked what pattern `test_collection.py` uses (fixtures +
+  Arrange/Act/Assert, `pytest.raises` for error cases) so I could mirror it in
+  `test_watchlist.py`.
+- **Git mechanics (Comment 6).** I used the AI to reason about the rebase — in particular to
+  recognize that main's refactor had *deleted* `WatchlistEntry`, so the break would be
+  semantic (a missing import) rather than a git conflict marker. I verified commit-message
+  format against the Conventional Commits spec myself after.
+
+**On the Comment 4 & 5 design decisions:** I made the calls myself — **private by default**
+(Comment 4) and **newest-first, consistent with the collection** (Comment 5). I used the AI
+as a sounding board to lay out the tradeoffs for each (public-by-default's social/discovery
+value; alphabetical's scan-ability), then chose the position and wrote the reasoning. My final
+argument on Comment 5 goes beyond "make them match": I framed sort strategy as a *cross-cutting*
+concern that should change in both endpoints together, which is my own framing rather than the
+AI's initial "just align them" suggestion.
+
+Every change was verified by running the test suite and, for the API, by exercising the live
+endpoints — I did not accept AI output without confirming behavior.
+
+## Comment 1 — Rename
+**What I did:**
+Renamed `save_to_watchlist()` to `add_to_watchlist()` in `services/watchlist_service.py`
+(the function definition) and updated every call site.
+
+**Where I looked to find all call sites:**
+Before renaming, I ran a project-wide search for `save_to_watchlist` across the whole
+repo. That surfaced exactly three references:
+1. `services/watchlist_service.py:12` — the function definition itself.
+2. `routes/watchlist/watchlist.py:8` — the `from services.watchlist_service import ...` line.
+3. `routes/watchlist/watchlist.py:32` — the call inside the `add_film` route handler.
+After editing all three, I re-ran the same project-wide search and it returned
+**no matches**, confirming nothing was missed (no stray references in tests, other
+services, or docs).
+
+**How I verified:**
+- Project-wide search for the old name returns zero matches.
+- Ran the full suite (`pytest tests/ -v`): 4 passed, 0 failed — nothing broke.
+- The rename is behavior-preserving; the new name matches the naming convention used
+  by the sibling `add_to_collection()` in the collection service.
+
+## Comment 2 — Deduplication
+**What I did:**
+Added deduplication to `add_to_watchlist()` in `services/watchlist_service.py`, following
+the exact pattern used by `add_to_collection()` in `services/collection_service.py`:
+- Defined a new `AlreadyInWatchlistError(Exception)` in the watchlist service, mirroring
+  how the collection service defines its own `AlreadyInCollectionError`.
+- Added the dedup check *after* the film-existence guard and *before* creating the entry:
+  query `WatchlistEntry` filtered by `user_id` + `film_id`, take `.first()`, and if a row
+  already exists, `raise AlreadyInWatchlistError` (no entry is created, nothing is committed).
+- Updated the docstring's `Raises:` section to document the new exception.
+
+**Model I followed (from Milestone 1 analysis of `add_to_collection`):**
+The collection dedup does a read-then-check: `Entry.query.filter_by(user_id=..., film_id=...).first()`,
+and if truthy, raises `AlreadyInCollectionError`. When a duplicate is detected it *raises*
+(returns nothing) and performs no DB write. I reproduced that ordering and behavior rather
+than relying only on the model's `UniqueConstraint`, so callers get a clean, named error
+instead of a raw `IntegrityError`.
+
+**How I verified the deduplication logic works:**
+- Ad-hoc check against an in-memory SQLite DB (same config the tests use): added a film to
+  a user's watchlist once (succeeds), then added the identical (user_id, film_id) again.
+  Result: the second call raised `AlreadyInWatchlistError`, and a follow-up
+  `WatchlistEntry.query...count()` returned **1** — confirming no duplicate row was written.
+- Ran the full suite (`pytest tests/ -v`): 4 passed, 0 failed — no regressions.
+  (A dedicated dupe test lives with the watchlist tests; see Comment 3 for the test file.)
+
+## Comment 3 — Missing test
+**What I did:**
+Created `tests/test_watchlist.py`. Because pytest fixtures don't cross files without a
+`conftest.py`, I replicated the three fixtures from `tests/test_collection.py`
+(`app` → in-memory SQLite test app, `sample_user` → returns a user id, `sample_film`
+→ returns a film id) so the new file stands alone but uses the identical setup.
+
+**Which test I used as my model:**
+`test_add_to_collection_nonexistent_film_raises` in `tests/test_collection.py`. I wrote the
+direct equivalent, `test_add_to_watchlist_nonexistent_film_raises`, using the same structure:
+open an `app.app_context()`, pass a fake film id (`"00000000-0000-0000-0000-000000000000"`,
+the same sentinel the collection test uses), and assert `pytest.raises(FilmNotFoundError)`.
+I also added the parallel `test_add_to_watchlist_creates_entry` (happy path) and
+`test_add_to_watchlist_duplicate_raises` (asserts `AlreadyInWatchlistError` and that only
+one row persists) — mirroring the collection suite and giving the Comment 2 dedup a
+regression test.
+
+**How I verified:**
+- `pytest tests/test_watchlist.py -v` → 3 passed.
+- `pytest tests/ -v` (full suite) → 7 passed, 0 failed (4 collection + 3 watchlist);
+  no regressions in the existing tests.
+
+## Comment 4 — Default visibility
+**My position:**
+New watchlist entries should default to **private** (`public=False`). I changed the
+`WatchlistEntry.public` column default from `True` to `False`.
+
+**Reasoning:**
+A watchlist is a record of films a user *intends* to watch — it's inherently personal and
+can reveal taste, mood, or plans the user may not want broadcast. The safer default is the
+one that can't surprise a user by exposing data they didn't choose to share: privacy by
+default, sharing by explicit opt-in. This also follows the principle of least astonishment
+and is the more defensible stance for anything privacy-adjacent — a user who wants a public
+watchlist can flip a single flag, but a user who is unexpectedly public can't un-share what
+was already seen.
+
+**Tradeoff acknowledged:**
+Public-by-default would make the watchlist a stronger social/discovery feature out of the
+box — friends could browse each other's lists with zero configuration, which drives
+engagement. By defaulting to private I'm trading some of that frictionless social value for
+safety. I think that's the right call for a default (you can always add an easy "make public"
+toggle), but it does mean the sharing feature needs a deliberate UI affordance to be
+discoverable, rather than being on for free.
+
+**How I verified:**
+Added `test_add_to_watchlist_defaults_to_private`, which asserts a freshly created entry has
+`public is False`. Full suite: `pytest tests/ -v` → 8 passed.
+
+## Comment 5 — Sort order
+**My position:**
+I agree with the reviewer. `get_watchlist()` now sorts by `date_added` **descending
+(newest first)**, matching `get_collection()`. Previously it sorted alphabetically by title.
+
+**Reasoning:**
+Two functions that both return "a user's saved films" were ordering results by different
+keys — collection by recency, watchlist alphabetically. That inconsistency is a footgun:
+a client rendering both lists has to special-case each, and users get two different mental
+models for the same kind of data. Recency is also the more useful default here — the film
+a user just added is the one most likely on their mind, and "newest first" surfaces it
+without scrolling. Alphabetical order is only clearly better when a list is long enough to
+scan by title, which isn't the common case for a personal watchlist.
+
+**Engagement with reviewer's point:**
+The reviewer flagged the divergence from `get_collection`'s ordering. I think that's the
+strongest form of the argument — the issue isn't that alphabetical is *wrong* in isolation,
+it's that consistency across the two endpoints has real value and there was no deliberate
+reason for watchlist to differ. If we later want alphabetical (or user-selectable) ordering,
+the right move is to add it to *both* endpoints together, not to let them drift. So I made
+watchlist match collection now, and noted sort-strategy as a future cross-cutting concern
+rather than a per-endpoint choice.
+
+**How I verified:**
+Added `test_get_watchlist_returns_newest_first` (mirrors the collection sort test): two
+entries added 5 days apart, asserts the later one comes first — this test would fail under
+the old alphabetical sort. Full suite: `pytest tests/ -v` → 9 passed.
+
+## Comment 6 — Rebase
+**What conflicted:**
+`origin/main` had advanced by a commit `refactor: migrate film IDs from integer to UUID`
+(`07ca580`) that did two things: (1) changed `Film.id` and `CollectionEntry.film_id` from
+`Integer` to `String(36)` UUID, and (2) **deleted the `WatchlistEntry` model** (an unused
+stub on main). My branch was based on the pre-refactor `main`, so:
+- **Textual conflict:** `.gitignore` (add/add) — both my branch and main added one.
+- **Semantic conflict (no git marker):** because no commit on my branch had ever modified
+  `models.py`, git silently took main's `models.py` during the rebase — which has UUID Film
+  IDs and **no `WatchlistEntry`**. My `watchlist_service.py` imports `WatchlistEntry`, so the
+  branch tip was left importing a model that no longer existed.
+
+**How I resolved it:**
+- Ran `git rebase origin/main`. Resolved the `.gitignore` add/add conflict by taking the
+  union — main's version is a superset of mine (it adds `.pytest_cache/`), so my now-redundant
+  `chore: add .gitignore` commit became empty and was dropped; main's `.gitignore` is inherited.
+- Restored `WatchlistEntry` in `models.py` in a dedicated commit, adapted to the new schema:
+  `film_id` is now `db.String(36)` (UUID) with a `ForeignKey("film.id")`, matching main's
+  `Film.id`. Also added a `watchlist_entries` relationship on `Film` (mirroring the existing
+  `collection_entries` backref) so `get_watchlist()`'s `entry.film` access works.
+- Updated `film_id` type in the `add_to_watchlist()` docstring and the route's request-body
+  comment from `int` to `str`/UUID.
+- Reworded the one inherited non-conventional commit (`added watchlist model and endpoint
+  fixed a bug more changes`) to `feat: add watchlist service and endpoints`.
+
+**How I verified no conflict remains:**
+- `git status` clean, no conflict markers; `git log` linear with no merge commits.
+- Full suite green on the UUID base: `pytest tests/ -v` → 7 passed.
+- End-to-end smoke test against an in-memory DB: created films (confirmed `film.id` is a
+  UUID string), added two to a watchlist, and `get_watchlist()` returned both with their
+  film data and `public` field — proving the restored model + relationship work post-rebase.
+
+## PR Description
+
+### What this feature does
+Adds a **watchlist** to CineLog — a per-user list of films a user wants to watch (distinct
+from the collection, which is films already watched). It ships:
+- `WatchlistEntry` model (UUID `film_id`, matching main's post-refactor `Film.id`).
+- Service layer (`services/watchlist_service.py`): `add_to_watchlist()` with film-existence
+  validation and duplicate prevention, and `get_watchlist()` returning the user's films.
+- REST endpoints (`routes/watchlist/watchlist.py`):
+  - `GET  /watchlist/<user_id>` — list a user's watchlist (newest first).
+  - `POST /watchlist/<user_id>/add` — body `{ "film_id": "<uuid>" }`; `201` on success,
+    `400` if `film_id` is missing, `404` if the film doesn't exist, `409` if it's already
+    on the watchlist.
+
+### Design decisions
+1. **Default visibility = private** (`WatchlistEntry.public = False`). A "want to watch" list
+   is personal; privacy-by-default can't surprise a user by exposing data they didn't choose
+   to share. Sharing is an explicit opt-in. (Tradeoff: less frictionless social discovery out
+   of the box — accepted.)
+2. **Sort order = newest-first** (`date_added` descending), consistent with `get_collection()`.
+   Two endpoints returning "a user's saved films" shouldn't order results differently; recency
+   is also the more useful default for a personal list. (See Comment 5 — I treat sort strategy
+   as a cross-cutting concern to change in both endpoints together, not per-endpoint.)
+
+### How to manually test
+From the repo root, with the virtualenv active:
+
+```bash
+# 1. Start the app
+python app.py            # serves on http://127.0.0.1:5000
+
+# 2. Seed a user + film (no create endpoints exist yet). In a second terminal:
+python -c "
+from app import create_app, db
+from models import User, Film
+app = create_app()
+with app.app_context():
+    db.create_all()
+    u = User(username='alice', email='alice@example.com')
+    f = Film(title='Parasite', year=2019, director='Bong Joon-ho', genre='Thriller')
+    db.session.add_all([u, f]); db.session.commit()
+    print('USER_ID=', u.id); print('FILM_ID=', f.id)
+"
+
+# 3. Exercise the endpoints (substitute the printed IDs):
+curl http://127.0.0.1:5000/watchlist/<USER_ID>                 # -> 200 []
+curl -X POST http://127.0.0.1:5000/watchlist/<USER_ID>/add \
+     -H "Content-Type: application/json" -d '{"film_id": "<FILM_ID>"}'   # -> 201, public:false
+curl -X POST http://127.0.0.1:5000/watchlist/<USER_ID>/add \
+     -H "Content-Type: application/json" -d '{"film_id": "<FILM_ID>"}'   # -> 409 (duplicate)
+curl -X POST http://127.0.0.1:5000/watchlist/<USER_ID>/add \
+     -H "Content-Type: application/json" -d '{"film_id": "00000000-0000-0000-0000-000000000000"}'  # -> 404
+curl http://127.0.0.1:5000/watchlist/<USER_ID>                 # -> 200, one film, public:false
+```
+
+Expected: add returns `201` with `"public": false`; a second identical add returns `409`; an
+unknown film returns `404`; a missing `film_id` returns `400`. Automated coverage:
+`pytest tests/ -v` → **9 passed**.
+
+### Commit history (`git log --oneline`, feature/watchlist)
+> Text capture of `git log --oneline`. (Rendered here as text; a literal screenshot image can
+> be pasted in its place if required — this environment is headless and can't capture one.)
+
+```
+4583354 fix: return 404/409 from watchlist add endpoint instead of 500
+823845b fix: sort watchlist by date added, newest first
+0275069 feat: default new watchlist entries to private
+7f6a6fc fix: restore WatchlistEntry model with UUID film_id after main's refactor
+121244e test: add tests for add_to_watchlist (nonexistent film, dedup, happy path)
+f8c4f7b feat: add deduplication to add_to_watchlist
+668a090 refactor: rename save_to_watchlist to add_to_watchlist
+52fa914 docs: add PR response doc
+3a617f5 fix: share single SQLAlchemy instance across app factory and models
+f72bcd7 fix: update film retrieval method to use db.session.get in collection and watchlist services
+ae0a22e feat: add watchlist service and endpoints
+```
+
+All 11 feature commits use Conventional Commits format and there are **no merge commits** in
+the branch's own work (the branch was rebased onto `origin/main`, not merged). The merge
+commit visible further down the log (`bbe206c`) belongs to `main`'s pre-existing history, not
+to this feature branch.
