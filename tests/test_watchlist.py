@@ -90,6 +90,18 @@ def test_add_to_watchlist_duplicate_raises(app, sample_user, sample_film):
         assert count == 1
 
 
+# ── Default visibility ───────────────────────────────────────────────────────
+
+def test_add_to_watchlist_defaults_to_private(app, sample_user, sample_film):
+    """
+    New watchlist entries should default to private (public=False).
+    A "want to watch" list is personal; users opt in to sharing.
+    """
+    with app.app_context():
+        entry = add_to_watchlist(user_id=sample_user, film_id=sample_film)
+        assert entry.public is False
+
+
 # ── Nonexistent film ─────────────────────────────────────────────────────────
 
 def test_add_to_watchlist_nonexistent_film_raises(app, sample_user):

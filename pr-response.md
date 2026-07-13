@@ -74,8 +74,29 @@ regression test.
 
 ## Comment 4 — Default visibility
 **My position:**
+New watchlist entries should default to **private** (`public=False`). I changed the
+`WatchlistEntry.public` column default from `True` to `False`.
+
 **Reasoning:**
+A watchlist is a record of films a user *intends* to watch — it's inherently personal and
+can reveal taste, mood, or plans the user may not want broadcast. The safer default is the
+one that can't surprise a user by exposing data they didn't choose to share: privacy by
+default, sharing by explicit opt-in. This also follows the principle of least astonishment
+and is the more defensible stance for anything privacy-adjacent — a user who wants a public
+watchlist can flip a single flag, but a user who is unexpectedly public can't un-share what
+was already seen.
+
 **Tradeoff acknowledged:**
+Public-by-default would make the watchlist a stronger social/discovery feature out of the
+box — friends could browse each other's lists with zero configuration, which drives
+engagement. By defaulting to private I'm trading some of that frictionless social value for
+safety. I think that's the right call for a default (you can always add an easy "make public"
+toggle), but it does mean the sharing feature needs a deliberate UI affordance to be
+discoverable, rather than being on for free.
+
+**How I verified:**
+Added `test_add_to_watchlist_defaults_to_private`, which asserts a freshly created entry has
+`public is False`. Full suite: `pytest tests/ -v` → 8 passed.
 
 ## Comment 5 — Sort order
 **My position:**
