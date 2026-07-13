@@ -84,8 +84,35 @@ regression test.
 
 ## Comment 6 — Rebase
 **What conflicted:**
+`origin/main` had advanced by a commit `refactor: migrate film IDs from integer to UUID`
+(`07ca580`) that did two things: (1) changed `Film.id` and `CollectionEntry.film_id` from
+`Integer` to `String(36)` UUID, and (2) **deleted the `WatchlistEntry` model** (an unused
+stub on main). My branch was based on the pre-refactor `main`, so:
+- **Textual conflict:** `.gitignore` (add/add) — both my branch and main added one.
+- **Semantic conflict (no git marker):** because no commit on my branch had ever modified
+  `models.py`, git silently took main's `models.py` during the rebase — which has UUID Film
+  IDs and **no `WatchlistEntry`**. My `watchlist_service.py` imports `WatchlistEntry`, so the
+  branch tip was left importing a model that no longer existed.
+
 **How I resolved it:**
+- Ran `git rebase origin/main`. Resolved the `.gitignore` add/add conflict by taking the
+  union — main's version is a superset of mine (it adds `.pytest_cache/`), so my now-redundant
+  `chore: add .gitignore` commit became empty and was dropped; main's `.gitignore` is inherited.
+- Restored `WatchlistEntry` in `models.py` in a dedicated commit, adapted to the new schema:
+  `film_id` is now `db.String(36)` (UUID) with a `ForeignKey("film.id")`, matching main's
+  `Film.id`. Also added a `watchlist_entries` relationship on `Film` (mirroring the existing
+  `collection_entries` backref) so `get_watchlist()`'s `entry.film` access works.
+- Updated `film_id` type in the `add_to_watchlist()` docstring and the route's request-body
+  comment from `int` to `str`/UUID.
+- Reworded the one inherited non-conventional commit (`added watchlist model and endpoint
+  fixed a bug more changes`) to `feat: add watchlist service and endpoints`.
+
 **How I verified no conflict remains:**
+- `git status` clean, no conflict markers; `git log` linear with no merge commits.
+- Full suite green on the UUID base: `pytest tests/ -v` → 7 passed.
+- End-to-end smoke test against an in-memory DB: created films (confirmed `film.id` is a
+  UUID string), added two to a watchlist, and `get_watchlist()` returned both with their
+  film data and `public` field — proving the restored model + relationship work post-rebase.
 
 ## PR Description
 <!-- Written at the end — feature overview, design decisions, manual testing steps -->
