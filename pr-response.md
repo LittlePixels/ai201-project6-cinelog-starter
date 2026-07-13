@@ -52,7 +52,25 @@ instead of a raw `IntegrityError`.
 
 ## Comment 3 — Missing test
 **What I did:**
+Created `tests/test_watchlist.py`. Because pytest fixtures don't cross files without a
+`conftest.py`, I replicated the three fixtures from `tests/test_collection.py`
+(`app` → in-memory SQLite test app, `sample_user` → returns a user id, `sample_film`
+→ returns a film id) so the new file stands alone but uses the identical setup.
+
+**Which test I used as my model:**
+`test_add_to_collection_nonexistent_film_raises` in `tests/test_collection.py`. I wrote the
+direct equivalent, `test_add_to_watchlist_nonexistent_film_raises`, using the same structure:
+open an `app.app_context()`, pass a fake film id (`"00000000-0000-0000-0000-000000000000"`,
+the same sentinel the collection test uses), and assert `pytest.raises(FilmNotFoundError)`.
+I also added the parallel `test_add_to_watchlist_creates_entry` (happy path) and
+`test_add_to_watchlist_duplicate_raises` (asserts `AlreadyInWatchlistError` and that only
+one row persists) — mirroring the collection suite and giving the Comment 2 dedup a
+regression test.
+
 **How I verified:**
+- `pytest tests/test_watchlist.py -v` → 3 passed.
+- `pytest tests/ -v` (full suite) → 7 passed, 0 failed (4 collection + 3 watchlist);
+  no regressions in the existing tests.
 
 ## Comment 4 — Default visibility
 **My position:**
